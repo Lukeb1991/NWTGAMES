@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wordle — NWT Games</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="confetti"></div>
+
+<div class="wrap">
+
+  <div class="game-header">
+    <a class="back-link" href="index.html">&larr; NWT Games</a>
+    <h1 class="game-title">Wordle</h1>
+  </div>
+  <p class="game-sub">Six rounds to raise the toast.</p>
+
+  <div class="wordle-board" id="board"></div>
+
+  <div class="keyboard" id="keyboard"></div>
+
+  <div class="restart-row">
+    <button class="restart-btn" id="resetBtn" title="Start over with a new word">
+      &#8635; New word
+    </button>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Win modal -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="win-modal">
+    <div class="win-seal">&#127942;</div>
+    <h2 id="winTitle">Cheers!</h2>
+    <p id="winSub">You got it in <span id="winGuessCount">1</span> guess.</p>
+    <div class="win-emoji-grid" id="winEmojiGrid"></div>
+    <div class="share-row">
+      <button class="share-btn whatsapp" id="shareWhatsapp">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38a9.87 9.87 0 0 0 4.74 1.21h.01c5.46 0 9.9-4.45 9.9-9.91C21.96 6.45 17.5 2 12.04 2Z"/></svg>
+        Share on WhatsApp
+      </button>
+      <button class="share-btn native" id="shareNative">
+        &#128241; Share
+      </button>
+      <button class="share-btn copy" id="shareCopy">
+        Copy message
+      </button>
+    </div>
+    <button class="modal-close" id="modalClose">Keep playing</button>
+  </div>
+</div>
+
+<script src="confetti.js"></script>
+<script>
+/* ============================================================
+   Word pool: first play is always DRUNK. "New word" afterwards
+   draws randomly from ALT_WORDS (never repeating the previous one).
+   ============================================================ */
+const FIRST_WORD = "DRUNK";
+const ALT_WORDS = ["AISLE","DRESS","BRIDE","GROOM","BELLE"];
+const ROWS = 6;
+const LEN = 5;
+const COUPLE_LINE = "I got drunk at The Bennett Wedding and all I got was this lowsy Wordle";
+
+let ANSWER = FIRST_WORD;
+let board = document.getElementById('board');
+let keyboard = document.getElementById('keyboard');
+let toastEl = document.getElementById('toast');
+
+let guesses = [];
+let guessResults = []; // array of result arrays, for the share emoji grid
+let current = "";
+let gameOver = false;
+
+/* ---------------- sound (synthesized, no external files) ---------------- */
+let audioCtx = null;
+function ctx(){
+  if(!audioCtx){
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if(audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+function tone(freq, dur, type='sine', vol=0.14, delay=0, glideTo=null){
+  try{
+    const c = ctx();
+    const osc = c.createOscillator();
+    const gain = c.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, c.currentTime + delay);
+    if(glideTo) osc.frequency.exponentialRampToValueAtTime(glideTo, c.currentTime + delay + dur);
+    gain.gain.setValueAtTime(vol, c.currentTime + delay);
+    gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + delay + dur);
+    osc.connect(gain).connect(c.destination);
+    osc.start(c.currentTime + delay);
+    osc.stop(c.currentTime + delay + dur + 0.02);
+  } catch(e){ /* audio unsupported — fail silently */ }
+}
+const sound = {
+  key: () => tone(520, 0.045, 'square', 0.05),
+  del: () => tone(280, 0.05, 'square', 0.05),
+  reveal: (result, i) => {
+    const freqs = { absent: 190, present: 340, correct: 500 };
+    tone(freqs[result], 0.16, 'sine', 0.11, i * 0.05);
+  },
+  error: () => { tone(160, 0.12, 'sawtooth', 0.09); tone(120, 0.14, 'sawtooth', 0.08, 0.08); },
+  win: () => {
+    const notes = [523, 659, 784, 1047]; // C E G C - little fanfare
+    notes.forEach((f,i)=> tone(f, 0.22, 'triangle', 0.13, i * 0.11));
+  },
+  lose: () => { tone(300, 0.3, 'sine', 0.1); tone(220, 0.4, 'sine', 0.09, 0.15); }
+};
+
+const rows = [];
+for(let r=0; r<ROWS; r++){
+  const rowEl = document.createElement('div');
+  rowEl.className = 'wordle-row';
+  const cells = [];
+  for(let c=0;c<LEN;c++){
+    const cell = document.createElement('div');
+    cell.className = 'wordle-cell';
+    rowEl.appendChild(cell);
+    cells.push(cell);
+  }
+  board.appendChild(rowEl);
+  rows.push(cells);
+}
+
+const KEY_ROWS = [
+  "QWERTYUIOP".split(""),
+  "ASDFGHJKL".split(""),
+  ["ENTER", ..."ZXCVBNM".split(""), "DEL"]
+];
+const keyEls = {};
+KEY_ROWS.forEach(row=>{
+  const rowEl = document.createElement('div');
+  rowEl.className = 'key-row';
+  row.forEach(k=>{
+    const btn = document.createElement('button');
+    btn.className = 'key' + (k.length>1 ? ' wide' : '');
+    btn.textContent = k === 'DEL' ? 'Del' : (k === 'ENTER' ? 'Enter' : k);
+    btn.addEventListener('click', ()=>handleKey(k));
+    rowEl.appendChild(btn);
+    keyEls[k] = btn;
+  });
+  keyboard.appendChild(rowEl);
+});
+
+function showToast(msg){
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  setTimeout(()=>toastEl.classList.remove('show'), 1400);
+}
+
+function handleKey(k){
+  if(gameOver) return;
+  if(k === 'ENTER'){
+    submitGuess();
+  } else if(k === 'DEL'){
+    if(current.length){ sound.del(); }
+    current = current.slice(0,-1);
+    renderCurrent();
+  } else if(/^[A-Z]$/.test(k) && current.length < LEN){
+    sound.key();
+    current += k;
+    renderCurrent();
+  }
+}
+
+document.addEventListener('keydown', (e)=>{
+  if(gameOver) return;
+  const k = e.key.toUpperCase();
+  if(k === 'ENTER') handleKey('ENTER');
+  else if(k === 'BACKSPACE') handleKey('DEL');
+  else if(/^[A-Z]$/.test(k)) handleKey(k);
+});
+
+function renderCurrent(){
+  const rowIdx = guesses.length;
+  const cells = rows[rowIdx];
+  for(let i=0;i<LEN;i++){
+    const cell = cells[i];
+    if(i < current.length){
+      cell.textContent = current[i];
+      cell.classList.add('filled', 'pop');
+      setTimeout(()=>cell.classList.remove('pop'), 120);
+    } else {
+      cell.textContent = '';
+      cell.classList.remove('filled');
+    }
+  }
+}
+
+function submitGuess(){
+  if(current.length < LEN){
+    showToast('Not enough letters');
+    sound.error();
+    shakeRow(guesses.length);
+    return;
+  }
+  const guess = current;
+  const result = scoreGuess(guess, ANSWER);
+  paintRow(guesses.length, guess, result);
+  guesses.push(guess);
+  guessResults.push(result);
+  current = "";
+
+  if(guess === ANSWER){
+    gameOver = true;
+    setTimeout(()=>{
+      sound.win();
+      launchConfettiBurst();
+      openWinModal(true);
+    }, 1650);
+    return;
+  }
+  if(guesses.length === ROWS){
+    gameOver = true;
+    setTimeout(()=>{
+      sound.lose();
+      openWinModal(false);
+    }, 1650);
+  }
+}
+
+function scoreGuess(guess, answer){
+  const result = new Array(LEN).fill('absent');
+  const answerLetters = answer.split("");
+  const used = new Array(LEN).fill(false);
+
+  for(let i=0;i<LEN;i++){
+    if(guess[i] === answer[i]){
+      result[i] = 'correct';
+      used[i] = true;
+    }
+  }
+  for(let i=0;i<LEN;i++){
+    if(result[i] === 'correct') continue;
+    const idx = answerLetters.findIndex((ch,j)=> ch === guess[i] && !used[j]);
+    if(idx !== -1){
+      result[i] = 'present';
+      used[idx] = true;
+    }
+  }
+  return result;
+}
+
+function paintRow(rowIdx, guess, result){
+  const cells = rows[rowIdx];
+  result.forEach((res, i)=>{
+    const cell = cells[i];
+    setTimeout(()=>{
+      cell.classList.add('flip');
+      sound.reveal(res, 0);
+      setTimeout(()=>{
+        cell.textContent = guess[i];
+        cell.classList.add(res);
+        updateKey(guess[i], res);
+      }, 250);
+    }, i * 220);
+  });
+}
+
+const KEY_PRIORITY = { absent:0, present:1, correct:2 };
+function updateKey(letter, res){
+  const btn = keyEls[letter];
+  if(!btn) return;
+  const cur = btn.dataset.state;
+  if(!cur || KEY_PRIORITY[res] > KEY_PRIORITY[cur]){
+    btn.dataset.state = res;
+    btn.classList.remove('absent','present','correct');
+    btn.classList.add(res);
+  }
+}
+
+function shakeRow(rowIdx){
+  const rowEl = rows[rowIdx][0].parentElement;
+  rowEl.style.animation = 'shake .4s ease';
+  setTimeout(()=> rowEl.style.animation = '', 400);
+}
+
+/* ---------------- restart / new word ---------------- */
+function pickNewWord(){
+  let pool = ALT_WORDS.filter(w => w !== ANSWER);
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function resetGame(newAnswer){
+  ANSWER = newAnswer;
+  guesses = [];
+  guessResults = [];
+  current = "";
+  gameOver = false;
+  rows.forEach(cells=>cells.forEach(cell=>{
+    cell.textContent = '';
+    cell.className = 'wordle-cell';
+  }));
+  Object.values(keyEls).forEach(btn=>{
+    btn.classList.remove('absent','present','correct');
+    delete btn.dataset.state;
+  });
+}
+
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  const midGame = !gameOver && guesses.length > 0;
+  if(midGame && !confirm('Give up on this word and start a new one?')) return;
+  closeWinModal();
+  resetGame(pickNewWord());
+});
+
+/* ---------------- win modal + share ---------------- */
+const modalOverlay = document.getElementById('modalOverlay');
+const winTitle = document.getElementById('winTitle');
+const winSub = document.getElementById('winSub');
+const winGuessCount = document.getElementById('winGuessCount');
+const winEmojiGrid = document.getElementById('winEmojiGrid');
+
+function buildEmojiGrid(){
+  const map = { correct: '🟩', present: '🟨', absent: '⬛' };
+  return guessResults.map(row => row.map(r => map[r]).join('')).join('\n');
+}
+
+function openWinModal(won){
+  winEmojiGrid.textContent = buildEmojiGrid();
+  if(won){
+    winTitle.textContent = 'Cheers! 🥂';
+    winGuessCount.textContent = guesses.length;
+    winSub.innerHTML = `You got it in <span id="winGuessCount">${guesses.length}</span> guess${guesses.length===1?'':'es'}.`;
+  } else {
+    winTitle.textContent = 'So close!';
+    winSub.textContent = `The word was ${ANSWER}. Fancy another round?`;
+  }
+  modalOverlay.classList.add('show');
+}
+function closeWinModal(){
+  modalOverlay.classList.remove('show');
+}
+document.getElementById('modalClose').addEventListener('click', closeWinModal);
+modalOverlay.addEventListener('click', (e)=>{ if(e.target === modalOverlay) closeWinModal(); });
+
+function shareText(){
+  return `${COUPLE_LINE}\n\n${buildEmojiGrid()}`;
+}
+
+document.getElementById('shareWhatsapp').addEventListener('click', ()=>{
+  const url = 'https://wa.me/?text=' + encodeURIComponent(shareText());
+  window.open(url, '_blank');
+});
+
+document.getElementById('shareNative').addEventListener('click', async ()=>{
+  if(navigator.share){
+    try{ await navigator.share({ text: shareText() }); }
+    catch(e){ /* user cancelled — fine */ }
+  } else {
+    copyToClipboard();
+  }
+});
+
+document.getElementById('shareCopy').addEventListener('click', copyToClipboard);
+
+function copyToClipboard(){
+  navigator.clipboard.writeText(shareText()).then(()=>{
+    showToast('Copied — paste it anywhere!');
+  }).catch(()=>{
+    showToast('Could not copy — try Share instead');
+  });
+}
+
+/* ---------------- confetti burst ---------------- */
+function launchConfettiBurst(){
+  const colors = ['#C1707E', '#AE8A4E', '#6E8B5E', '#8A6389', '#C79A2E'];
+  const count = 60;
+  for(let i=0;i<count;i++){
+    const piece = document.createElement('div');
+    piece.className = 'burst-piece';
+    piece.style.left = (40 + Math.random()*20) + 'vw';
+    piece.style.background = colors[i % colors.length];
+    piece.style.setProperty('--x', (Math.random()*160-80) + 'vw');
+    piece.style.setProperty('--rot', (Math.random()*720-360) + 'deg');
+    piece.style.setProperty('--dur', (1.6 + Math.random()*1.4) + 's');
+    piece.style.setProperty('--delay', (Math.random()*0.3) + 's');
+    document.body.appendChild(piece);
+    setTimeout(()=> piece.remove(), 3200);
+  }
+}
+</script>
+</body>
+</html>
