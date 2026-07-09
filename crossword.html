@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mini — NWT Games</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="confetti"></div>
+
+<div class="wrap">
+
+  <div class="game-header">
+    <a class="back-link" href="index.html">&larr; NWT Games</a>
+    <h1 class="game-title">The Mini</h1>
+  </div>
+  <p class="game-sub">A little crossword before the cake. <em>(First-draft template — easy to swap the grid below.)</em></p>
+
+  <div class="xw-layout">
+    <div class="xw-board" id="board" style="grid-template-columns:repeat(5,1fr);"></div>
+
+    <div class="xw-clues">
+      <h3>Across</h3>
+      <ul class="xw-clue-list" id="acrossList"></ul>
+      <h3>Down</h3>
+      <ul class="xw-clue-list" id="downList"></ul>
+    </div>
+  </div>
+
+  <div style="text-align:center; margin-top:20px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+    <button class="pill-btn" id="checkBtn">Check puzzle</button>
+    <button class="pill-btn ghost" id="revealBtn">Reveal answers</button>
+    <button class="pill-btn ghost" id="clearBtn">Clear</button>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="confetti.js"></script>
+<script>
+/* ============================================================
+   TEMPLATE NOTE: this is a first-draft 5x5 grid. To swap in a
+   new puzzle, edit ANSWERS + CLUES below — the block pattern
+   (# = blocked) and numbering are generated automatically from
+   whichever cells you mark as '#' in the LAYOUT string.
+   ============================================================ */
+
+// '.' = open cell, '#' = blocked cell. Must stay rectangular.
+const LAYOUT = [
+  "....#",
+  ".....",
+  ".....",
+  ".....",
+  "#....",
+];
+
+// Answers keyed by starting-cell "row,col" + direction.
+const ANSWERS = {
+  "0,0,A": "VEIL",
+  "1,0,A": "OLDIE",
+  "2,0,A": "WALKS",
+  "3,0,A": "STEEP",
+  "4,1,A": "EDDY",
+  "0,0,D": "VOWS",
+  "0,1,D": "ELATE",
+  "0,2,D": "IDLED",
+  "0,3,D": "LIKED",
+  "1,4,D": "ESPY",
+};
+
+const CLUES = {
+  "0,0,A": "Bridal accessory lifted after \u201cI do\u201d",
+  "1,0,A": "Golden song the DJ saves for the parents",
+  "2,0,A": "What the bride does down the aisle",
+  "3,0,A": "Like the price of an open bar",
+  "4,1,A": "Swirl on the dance floor",
+  "0,0,D": "Promises exchanged at the altar",
+  "0,1,D": "Fill with joy, as a proposal might",
+  "0,2,D": "Sat in neutral, like the getaway car before the confetti",
+  "0,3,D": "Gave the wedding hashtag posts a thumbs-up",
+  "1,4,D": "Catch sight of, e.g. the bouquet mid-toss",
+};
+
+const R = LAYOUT.length, C = LAYOUT[0].length;
+const isBlock = (r,c) => LAYOUT[r][c] === '#';
+
+// ---- build entries + numbering ----
+const numberAt = {};   // "r,c" -> number
+const entries = [];    // {num, dir, r, c, cells:[[r,c],...], answer, clue}
+let num = 1;
+
+for(let r=0;r<R;r++){
+  for(let c=0;c<C;c++){
+    if(isBlock(r,c)) continue;
+    const startsAcross = (c===0 || isBlock(r,c-1)) && (c+1<C && !isBlock(r,c+1));
+    const startsDown    = (r===0 || isBlock(r-1,c)) && (r+1<R && !isBlock(r+1,c));
+    if(startsAcross || startsDown){
+      numberAt[`${r},${c}`] = num;
+      if(startsAcross){
+        const cells=[]; let cc=c;
+        while(cc<C && !isBlock(r,cc)){ cells.push([r,cc]); cc++; }
+        const key = `${r},${c},A`;
+        entries.push({num, dir:'A', r, c, cells, answer:ANSWERS[key]||'', clue:CLUES[key]||''});
+      }
+      if(startsDown){
+        const cells=[]; let rr=r;
+        while(rr<R && !isBlock(rr,c)){ cells.push([rr,c]); rr++; }
+        const key = `${r},${c},D`;
+        entries.push({num, dir:'D', r, c, cells, answer:ANSWERS[key]||'', clue:CLUES[key]||''});
+      }
+      num++;
+    }
+  }
+}
+
+// ---- render board ----
+const boardEl = document.getElementById('board');
+boardEl.style.gridTemplateColumns = `repeat(${C}, 1fr)`;
+const cellInputs = {}; // "r,c" -> input el
+const cellWraps = {};  // "r,c" -> wrap div
+
+for(let r=0;r<R;r++){
+  for(let c=0;c<C;c++){
+    const cell = document.createElement('div');
+    cell.className = 'xw-cell';
+    if(isBlock(r,c)){
+      cell.classList.add('block');
+    } else {
+      const key = `${r},${c}`;
+      if(numberAt[key]){
+        const n = document.createElement('span');
+        n.className = 'xw-num';
+        n.textContent = numberAt[key];
+        cell.appendChild(n);
+      }
+      const input = document.createElement('input');
+      input.maxLength = 1;
+      input.autocomplete = 'off';
+      input.dataset.r = r; input.dataset.c = c;
+      cell.appendChild(input);
+      cellInputs[key] = input;
+      cellWraps[key] = cell;
+    }
+    boardEl.appendChild(cell);
+  }
+}
+
+// ---- active word state ----
+let activeEntry = null; // entry object
+
+function entriesAt(r,c){
+  return entries.filter(e => e.cells.some(([er,ec]) => er===r && ec===c));
+}
+
+function setActive(entry){
+  document.querySelectorAll('.xw-cell.active-word').forEach(el=>el.classList.remove('active-word'));
+  document.querySelectorAll('.xw-clue-list li').forEach(li=>li.classList.remove('active'));
+  activeEntry = entry;
+  entry.cells.forEach(([r,c])=> cellWraps[`${r},${c}`].classList.add('active-word'));
+  const li = document.querySelector(`li[data-key="${entry.r},${entry.c},${entry.dir}"]`);
+  if(li) li.classList.add('active');
+}
+
+function focusCell(r,c){
+  const input = cellInputs[`${r},${c}`];
+  if(input) input.focus();
+}
+
+function cellClicked(r,c){
+  const here = entriesAt(r,c);
+  if(here.length === 0) return;
+  if(activeEntry && here.includes(activeEntry)){
+    // toggle direction if both exist
+    const other = here.find(e => e !== activeEntry);
+    if(other) setActive(other);
+  } else {
+    setActive(here[0]);
+  }
+  focusCell(r,c);
+}
+
+Object.entries(cellInputs).forEach(([key, input])=>{
+  const [r,c] = key.split(',').map(Number);
+  input.addEventListener('click', ()=> cellClicked(r,c));
+  input.addEventListener('input', (e)=>{
+    input.value = input.value.toUpperCase().replace(/[^A-Z]/g,'');
+    if(input.value) advance(r,c);
+  });
+  input.addEventListener('keydown', (e)=>{
+    if(e.key === 'Backspace' && !input.value){ retreat(r,c); }
+    else if(e.key === 'ArrowRight') moveDir(r,c,0,1);
+    else if(e.key === 'ArrowLeft') moveDir(r,c,0,-1);
+    else if(e.key === 'ArrowDown') moveDir(r,c,1,0);
+    else if(e.key === 'ArrowUp') moveDir(r,c,-1,0);
+  });
+});
+
+function moveDir(r,c,dr,dc){
+  let nr=r+dr, nc=c+dc;
+  while(nr>=0 && nr<R && nc>=0 && nc<C){
+    if(!isBlock(nr,nc)){ focusCell(nr,nc); return; }
+    nr+=dr; nc+=dc;
+  }
+}
+
+function advance(r,c){
+  if(!activeEntry) return;
+  const idx = activeEntry.cells.findIndex(([er,ec])=>er===r&&ec===c);
+  if(idx > -1 && idx+1 < activeEntry.cells.length){
+    const [nr,nc] = activeEntry.cells[idx+1];
+    focusCell(nr,nc);
+  }
+}
+function retreat(r,c){
+  if(!activeEntry) return;
+  const idx = activeEntry.cells.findIndex(([er,ec])=>er===r&&ec===c);
+  if(idx > 0){
+    const [pr,pc] = activeEntry.cells[idx-1];
+    focusCell(pr,pc);
+  }
+}
+
+// ---- clue lists ----
+const acrossList = document.getElementById('acrossList');
+const downList = document.getElementById('downList');
+entries.sort((a,b)=> a.num - b.num);
+entries.forEach(e=>{
+  const li = document.createElement('li');
+  li.textContent = `${e.num}. ${e.clue} (${e.cells.length})`;
+  li.dataset.key = `${e.r},${e.c},${e.dir}`;
+  li.addEventListener('click', ()=>{ setActive(e); focusCell(e.r,e.c); });
+  (e.dir === 'A' ? acrossList : downList).appendChild(li);
+});
+
+// default active word
+if(entries.length){ setActive(entries[0]); }
+
+// ---- check / reveal / clear ----
+const toastEl = document.getElementById('toast');
+function showToast(msg){
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  setTimeout(()=>toastEl.classList.remove('show'), 1600);
+}
+
+document.getElementById('checkBtn').addEventListener('click', ()=>{
+  let allFilled = true, allCorrect = true;
+  for(let r=0;r<R;r++){
+    for(let c=0;c<C;c++){
+      if(isBlock(r,c)) continue;
+      const input = cellInputs[`${r},${c}`];
+      if(!input.value){ allFilled = false; continue; }
+    }
+  }
+  entries.forEach(e=>{
+    const typed = e.cells.map(([r,c])=> cellInputs[`${r},${c}`].value || ' ').join('');
+    if(e.answer && typed !== e.answer) allCorrect = false;
+  });
+  if(!allFilled){ showToast('Keep going — a few squares left'); return; }
+  showToast(allCorrect ? 'All correct! 🥂' : 'Close, but a few letters are off');
+});
+
+document.getElementById('revealBtn').addEventListener('click', ()=>{
+  entries.forEach(e=>{
+    e.cells.forEach(([r,c], i)=>{
+      const input = cellInputs[`${r},${c}`];
+      if(e.answer) input.value = e.answer[i];
+    });
+  });
+  showToast('Answers revealed');
+});
+
+document.getElementById('clearBtn').addEventListener('click', ()=>{
+  Object.values(cellInputs).forEach(input=> input.value = '');
+  showToast('Cleared');
+});
+</script>
+</body>
+</html>
